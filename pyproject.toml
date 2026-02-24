@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "equitylens"
+version = "0.1.0"
+description = "AI-Powered Equity Research Agent — Multi-factor fundamental analysis powered by LLMs"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "EquityLens Contributors" },
+]
+
+dependencies = [
+    "langgraph",
+    "langchain",
+    "langchain-community",
+    "fastapi",
+    "uvicorn",
+    "streamlit",
+    "yfinance",
+    "pandas",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "plotly",
+    "requests",
+    "pydantic",
+    "ollama",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["equitylens*"]
