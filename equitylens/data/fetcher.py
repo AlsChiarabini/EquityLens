@@ -4,11 +4,10 @@ equitylens.data.fetcher
 
 Unified data acquisition layer for the EquityLens research agent.
 
-Data sources (all free-tier):
-  • yfinance      — price history, financial statements, company profile
-  • NewsAPI       — recent news headlines  (FREE_API_KEY: 100 req/day)
-  • FMP (FinancialModelingPrep) — earnings-call transcripts, dynamic peer
-    discovery via stock screener  (FREE_API_KEY: 250 req/day)
+Data sources (all **100 % free**, no paid API keys required):
+  • yfinance         — price history, financial statements, company profile
+  • NewsAPI          — recent news headlines  (free tier: 100 req/day)
+  • Motley Fool      — earnings-call transcripts (HTML scraping, no key)
 
 Design choices:
   - Disk cache (via *diskcache*) avoids re-fetching identical data within a
@@ -26,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -35,6 +35,7 @@ from typing import Any, Optional
 import pandas as pd
 import requests
 import yfinance as yf
+from bs4 import BeautifulSoup
 from diskcache import Cache
 from dotenv import load_dotenv
 from tenacity import (
@@ -97,7 +98,7 @@ class EquityData:
     financials: dict[str, pd.DataFrame] # annual + quarterly statements
     info: dict                          # yfinance .info blob
     news: list[dict]                    # [{title, description, url, …}]
-    transcripts: list[dict]             # earnings-call transcripts (FMP)
+    transcripts: list[dict]             # earnings-call transcripts (Motley Fool)
     peers: list[str]                    # comparable tickers
     fetched_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -122,8 +123,19 @@ class DataFetcher:
     """
 
     # -- API endpoints -------------------------------------------------------
-    NEWS_API_URL = "https://newsapi.org/v2/everything"
-    FMP_BASE     = "https://financialmodelingprep.com/api/v3"
+    NEWS_API_URL     = "https://newsapi.org/v2/everything"
+    FOOL_QUOTE_URL   = "https://www.fool.com/quote/{exchange}/{ticker}/"
+
+    # Map yfinance exchange codes → Motley Fool URL slugs
+    _EXCHANGE_MAP: dict[str, str] = {
+        "NMS": "nasdaq",   # NASDAQ Global Select Market
+        "NGM": "nasdaq",   # NASDAQ Global Market
+        "NCM": "nasdaq",   # NASDAQ Capital Market
+        "NYQ": "nyse",     # NYSE
+        "NYS": "nyse",
+        "PCX": "nyse",     # NYSE Arca
+        "ASE": "amex",     # AMEX
+    }
 
     # -- Tunables ------------------------------------------------------------
     MAX_PEERS: int            = 8
@@ -132,14 +144,20 @@ class DataFetcher:
     NEWS_MAX_ARTICLES: int    = 20
     TRANSCRIPT_LIMIT: int     = 4   # last N quarterly calls
 
+    # Standard browser UA — Motley Fool blocks bare requests
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+    }
+
     def __init__(self) -> None:
         self.news_api_key: str | None = os.getenv("NEWS_API_KEY")
-        self.fmp_api_key: str | None  = os.getenv("FMP_API_KEY")
 
         if not self.news_api_key:
             logger.warning("NEWS_API_KEY not set — news fetching will be skipped.")
-        if not self.fmp_api_key:
-            logger.warning("FMP_API_KEY not set — transcripts & dynamic peers disabled.")
 
     # -- public API ----------------------------------------------------------
 
@@ -163,7 +181,7 @@ class DataFetcher:
             "prices":      lambda: self._fetch_prices(yf_ticker, ticker),
             "financials":  lambda: self._fetch_financials(yf_ticker, ticker),
             "news":        lambda: self._fetch_news(ticker, profile.name),
-            "transcripts": lambda: self._fetch_transcripts(ticker),
+            "transcripts": lambda: self._fetch_transcripts(ticker, profile.name, info),
             "peers":       lambda: self._fetch_peers(ticker, info),
         }
 
@@ -339,103 +357,150 @@ class DataFetcher:
         _cache.set(key, cleaned, expire=_CACHE_TTL)
         return cleaned
 
-    # -- earnings transcripts (FMP, free tier: 250 req/day) ------------------
+    # -- earnings transcripts (Motley Fool scraping, free) -------------------
 
-    @_http_retry
-    def _fetch_transcripts(self, ticker: str) -> list[dict]:
+    def _fetch_transcripts(self, ticker: str, company_name: str, info: dict) -> list[dict]:
         """
-        Last N quarterly earnings-call transcripts via FinancialModelingPrep.
+        Scrape the last N quarterly earnings-call transcripts from The Motley
+        Fool.  **No API key required** — pure HTML scraping.
 
-        Each item contains:
-            {quarter, year, date, content}
+        Strategy:
+          1. Visit the ticker's quote page on fool.com (e.g.
+             fool.com/quote/nasdaq/aapl/) which lists recent transcript links.
+          2. Filter links matching ``/earnings/call-transcripts/`` and the ticker.
+          3. Fetch & parse each transcript page with BeautifulSoup.
+
+        Each returned item contains:
+            {quarter, year, date, title, content, source_url}
         """
-        if not self.fmp_api_key:
-            return []
-
         key = _cache_key("transcripts", ticker)
         cached = _cache.get(key)
         if cached is not None:
             return cached  # type: ignore[return-value]
 
         transcripts: list[dict] = []
-        for i in range(self.TRANSCRIPT_LIMIT):
-            url = f"{self.FMP_BASE}/earning_call_transcript/{ticker}"
-            try:
-                resp = requests.get(
-                    url,
-                    params={"quarter": 4 - i, "year": datetime.today().year, "apikey": self.fmp_api_key},
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                if data:
-                    # FMP returns a list; take the first item per quarter
-                    entry = data[0] if isinstance(data, list) else data
-                    transcripts.append({
-                        "quarter": entry.get("quarter", ""),
-                        "year":    entry.get("year", ""),
-                        "date":    entry.get("date", ""),
-                        "content": entry.get("content", ""),
-                    })
-            except Exception as exc:
-                logger.warning("Transcript fetch failed (Q%d): %s", 4 - i, exc)
+
+        try:
+            urls = self._search_fool_transcripts(ticker, info)
+            for url in urls[: self.TRANSCRIPT_LIMIT]:
+                try:
+                    transcript = self._scrape_fool_transcript(url)
+                    if transcript:
+                        transcripts.append(transcript)
+                except Exception as exc:
+                    logger.warning("Failed to scrape transcript %s: %s", url, exc)
+        except Exception as exc:
+            logger.warning("Transcript search failed for %s: %s", ticker, exc)
 
         _cache.set(key, transcripts, expire=_CACHE_TTL)
         return transcripts
 
-    # -- peer discovery (FMP screener → hardcoded fallback) ------------------
+    # -- transcript helpers --------------------------------------------------
 
     @_http_retry
+    def _search_fool_transcripts(self, ticker: str, info: dict) -> list[str]:
+        """Return a list of Motley Fool transcript URLs for *ticker*.
+
+        Scrapes the ticker's Motley Fool quote page which conveniently lists
+        links to the most recent earnings-call transcripts.
+        """
+        # Resolve the exchange slug (nasdaq, nyse, …)
+        yf_exchange = info.get("exchange", "")
+        exchange_slug = self._EXCHANGE_MAP.get(yf_exchange, "").lower()
+
+        # If we can't map it, try the two most common exchanges
+        slugs_to_try = [exchange_slug] if exchange_slug else ["nasdaq", "nyse"]
+
+        soup: BeautifulSoup | None = None
+        for slug in slugs_to_try:
+            url = self.FOOL_QUOTE_URL.format(exchange=slug, ticker=ticker.lower())
+            try:
+                resp = requests.get(url, headers=self._HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    break
+            except requests.RequestException:
+                continue
+
+        if soup is None:
+            logger.warning("Could not find Motley Fool quote page for %s", ticker)
+            return []
+
+        urls: list[str] = []
+        seen: set[str] = set()
+        for a_tag in soup.find_all("a", href=True):
+            href: str = a_tag["href"]
+            if "earnings/call-transcripts" not in href:
+                continue
+            # We're on the ticker-specific page — every transcript link
+            # belongs to this company, so no additional ticker filter needed.
+            # Normalise to full URL and deduplicate.
+            # Some links appear with a /4056/ prefix — strip it.
+            clean = re.sub(r"^/\d+/", "/", href)
+            full = clean if clean.startswith("http") else f"https://www.fool.com{clean}"
+            if full not in seen:
+                seen.add(full)
+                urls.append(full)
+        return urls
+
+    @_http_retry
+    def _scrape_fool_transcript(self, url: str) -> dict | None:
+        """Fetch a single Motley Fool transcript page and extract its content."""
+        resp = requests.get(url, headers=self._HEADERS, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # --- title (e.g. "Apple (AAPL) Q1 2025 Earnings Call Transcript") ---
+        h1 = soup.find("h1")
+        title = h1.get_text(strip=True) if h1 else ""
+
+        # Parse quarter & fiscal year from the title
+        match = re.search(r"Q(\d)\s+(\d{4})", title)
+        quarter = int(match.group(1)) if match else 0
+        year = int(match.group(2)) if match else 0
+
+        # --- date ---
+        time_tag = soup.find("time")
+        date_str = time_tag.get("datetime", "") if time_tag else ""
+
+        # --- transcript body ---
+        # Motley Fool wraps the transcript inside <article> or a div with
+        # class "article-body".  We grab whichever exists.
+        article = soup.find("article") or soup.find("div", class_="article-body")
+        if not article:
+            return None
+
+        content = article.get_text(separator="\n", strip=True)
+
+        # Drop very short pages (likely paywalled or empty stubs)
+        if len(content) < 500:
+            return None
+
+        return {
+            "quarter":    quarter,
+            "year":       year,
+            "date":       date_str,
+            "title":      title,
+            "content":    content,
+            "source_url": url,
+        }
+
+    # -- peer discovery (sector map) -----------------------------------------
+
     def _fetch_peers(self, ticker: str, info: dict) -> list[str]:
         """
-        Two-stage peer discovery:
-          1. FMP stock screener — same sector, similar market cap (±50%)
-          2. Fallback → hardcoded sector map (no API needed)
+        Return comparable tickers in the same sector.
 
-        The analysed ticker is always excluded from the peer list.
+        Uses a curated sector map covering the 11 GICS sectors.  The
+        analysed ticker is always excluded from the result.
         """
         sector = info.get("sector", "")
-        market_cap = info.get("marketCap", 0)
-
-        # --- Stage 1: dynamic peers via FMP screener ------------------------
-        if self.fmp_api_key and sector and market_cap:
-            key = _cache_key("peers", ticker, sector, str(int(market_cap)))
-            cached = _cache.get(key)
-            if cached is not None:
-                return cached  # type: ignore[return-value]
-
-            try:
-                resp = requests.get(
-                    f"{self.FMP_BASE}/stock-screener",
-                    params={
-                        "sector": sector,
-                        "marketCapMoreThan": int(market_cap * 0.5),
-                        "marketCapLowerThan": int(market_cap * 1.5),
-                        "limit": self.MAX_PEERS + 5,  # over-fetch to allow filtering
-                        "apikey": self.fmp_api_key,
-                    },
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                peers = [
-                    item["symbol"]
-                    for item in resp.json()
-                    if item.get("symbol") and item["symbol"] != ticker
-                ][:self.MAX_PEERS]
-
-                if peers:
-                    _cache.set(key, peers, expire=_CACHE_TTL)
-                    return peers
-            except Exception as exc:
-                logger.warning("FMP peer screener failed: %s — using fallback.", exc)
-
-        # --- Stage 2: hardcoded fallback ------------------------------------
         all_peers = _SECTOR_PEERS.get(sector, [])
-        return [p for p in all_peers if p != ticker][:self.MAX_PEERS]
+        return [p for p in all_peers if p != ticker][: self.MAX_PEERS]
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded sector peer map (fallback when FMP key is absent or rate-limited)
+# Curated sector peer map (covers all 11 GICS sectors)
 # ---------------------------------------------------------------------------
 
 _SECTOR_PEERS: dict[str, list[str]] = {

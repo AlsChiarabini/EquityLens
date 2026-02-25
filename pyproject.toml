@@ -33,6 +33,7 @@ dependencies = [
     "python-dotenv",
     "diskcache",
     "tenacity",
+    "beautifulsoup4",
 ]
 
 [project.optional-dependencies]
