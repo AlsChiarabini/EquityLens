@@ -30,6 +30,9 @@ dependencies = [
     "requests",
     "pydantic",
     "ollama",
+    "python-dotenv",
+    "diskcache",
+    "tenacity",
 ]
 
 [project.optional-dependencies]
