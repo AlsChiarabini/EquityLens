@@ -1,0 +1,75 @@
+  ---
+  Punti di forza reali
+
+  Differenziatori rispetto ai soliti portfolio project:
+  - Cita una paper accademica reale (EJOR 2026) e la implementa — pochissimi candidati lo fanno
+  - Il confronto tra 7 metodi di aggregazione dimostra conoscenza teorica, non solo coding
+  - Architettura production-grade: caching, retry, I/O parallelo, preprocessing, test suite
+  - Stack moderno e rilevante: LangGraph, FastAPI, Streamlit, multi-provider LLM
+
+  ---
+  Problemi concreti da risolvere
+
+  1. Nessuna demo live — è il problema più grande
+
+  Un recruiter ha 90 secondi. Se deve clonare un repo, installare dipendenze e configurare API key, non lo fa. Un link cliccabile a una demo su Streamlit Community Cloud o
+  HuggingFace Spaces vale più di 500 righe di codice.
+
+  2. I notebook non esistono
+
+  Il README li elenca tutti e tre con descrizioni dettagliate, ma la cartella notebooks/ è vuota. Se un recruiter tecnico clona il repo, lo nota immediatamente. Peggio che non
+  averli citati.
+
+  3. Il DOI è un placeholder
+
+  [Guidetti et al. (2026)](https://doi.org/xxx)
+
+  Questo appare nel README tre volte. Fa sembrare il progetto non finito. O metti il DOI vero, o rimuovi il link e lasci solo la citazione testuale.
+
+  4. Nessun risultato mostrato
+
+  Il README parla di "dominates 10 competing methods on 23 years of US data" ma non mostra un singolo grafico o numero prodotto da questo progetto. Un recruiter non sa se il
+  sistema funziona davvero o se è solo architettura.
+
+  5. La demo screenshot nel README è inventata
+
+  Il "Sample output" con AAPL | 2024-Q4 | Score 0.73 | LONG è hardcoded nel README. Se il recruiter lo esegue e vede 0.33 | SHORT, l'impressione è negativa — sembra che abbiate
+  scritto un output desiderato che non corrisponde alla realtà.
+
+  ---
+  Cosa farei concretamente
+
+  Priorità alta (1-2 ore ciascuno):
+
+  1. Notebook 01 — anche solo 30 righe: carica i dati di AAPL, plotta la distribuzione dei 15 fattori, una heatmap di correlazione. Basta quello.
+  2. Notebook 02 — esegui la pipeline su 5-10 ticker, mostra una tabella con il ranking Copeland vs Mean Rank, un bar chart. Dimostra che il codice gira davvero.
+  3. Aggiorna il Sample output nel README con un output reale dell'app — anche se AAPL dà SHORT, è più credibile.
+  4. Rimuovi o aggiusta il DOI placeholder.
+
+  Priorità media:
+
+  5. Deploy su Streamlit Community Cloud — è gratuito, richiede 20 minuti. Aggiungi il badge nel README. Questo cambia completamente la percezione.
+  6. Aggiungi uno screenshot della UI nel README. Un'immagine del dashboard Plotly vale mille parole.
+
+  ---
+  Valutazione per ruolo
+
+  ┌──────────────────────────┬─────────────────────┬────────────┐
+  │          Ruolo           │ Valutazione attuale │ Con le fix │
+  ├──────────────────────────┼─────────────────────┼────────────┤
+  │ Quant/Algo Trading       │ 8/10                │ 9/10       │
+  ├──────────────────────────┼─────────────────────┼────────────┤
+  │ ML Engineer              │ 7/10                │ 8/10       │
+  ├──────────────────────────┼─────────────────────┼────────────┤
+  │ Data Scientist (finance) │ 6/10                │ 8/10       │
+  ├──────────────────────────┼─────────────────────┼────────────┤
+  │ Backend/API Engineer     │ 7/10                │ 8/10       │
+  ├──────────────────────────┼─────────────────────┼────────────┤
+  │ Startup fintech generica │ 8/10                │ 9/10       │
+  └──────────────────────────┴─────────────────────┴────────────┘
+
+  ---
+  Sintesi
+
+  Il codice è buono. Il portfolio project ha lacune di presentazione. I notebook mancanti e il doi placeholder sono le cose che un recruiter tecnico nota per prima. Una demo live
+   è ciò che convince un recruiter non tecnico. Le fix sono tutte piccole — niente di architetturale da cambiare.

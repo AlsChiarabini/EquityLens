@@ -177,6 +177,96 @@ Aggregation is performed via Copeland's pairwise majority rule, with optional co
 
 ---
 
+## Understanding the Output
+
+### The Analysis Pipeline
+
+When you enter a ticker, six LangGraph nodes run in sequence:
+
+| Step | Node | What happens |
+|---|---|---|
+| 1 | **fetch_data** | Downloads 3 years of prices, annual + quarterly financials, up to 20 recent news articles, the last 4 earnings call transcripts (Motley Fool), and a curated peer list — all from free sources |
+| 2 | **compute_factors** | Computes the 15 academic factors from raw financial data |
+| 3 | **aggregate** | Combines the 15 factors into a composite score using all 7 methods simultaneously |
+| 4 | **analyze_news** | Sends headlines and transcript excerpts to the LLM, which returns a sentiment score, bull/bear thesis, and key themes — **this is the only step that uses a paid API** |
+| 5 | **compare_peers** | Fetches P/E, EV/EBITDA, P/S, P/B, ROE, and net margin for up to 5 sector peers and ranks the stock against them |
+| 6 | **generate_report** | Assembles everything into the structured report |
+
+---
+
+### Factor Scores
+
+Each of the 15 factors is normalised to **[0, 1]** where **0.5 = market average**. A score above 0.5 means the stock is better than the average US large/mid-cap on that dimension; below 0.5 means worse.
+
+Normalisation is done via z-score against empirical market priors, then a sigmoid transform — so the result is always bounded and directly comparable across factors.
+
+| Category | Factors | A high score means… |
+|---|---|---|
+| **VALUE** | Book-to-Market, Earnings/Price, EBITDA/EV, Sales/Market | The stock is cheap relative to fundamentals |
+| **MOMENTUM** | 12-1 month return (skip-one) | Strong recent price trend |
+| **PROFITABILITY** | Gross Profit/Assets, Operating Income/Book Equity | Highly efficient at generating profits |
+| **INVESTMENT** | Asset Growth, Accruals, Net Stock Issuance | Conservative investment policy: slow asset growth, high earnings quality, more buybacks than dilution |
+| **RISK** | Beta, Realised Volatility | Low market risk (the low-beta and low-vol anomalies reward defensive stocks) |
+| **LIQUIDITY** | Dollar Volume, Debt-to-Market | Highly liquid and low leverage |
+| **SIZE** | Log(Market Cap) | Small-cap, which historically earns a size premium |
+
+> **Example — AAPL:** PROFITABILITY ≈ 0.93 (exceptional margins), SIZE ≈ 0.01 (mega-cap, no size premium), RISK ≈ 0.02 (high beta/volatility penalised by the low-risk factor), VALUE ≈ 0.32 (expensive relative to book and earnings).
+
+---
+
+### Aggregation Methods
+
+The 7 methods answer the same question — *"How attractive is this stock overall?"* — using different mathematical approaches. Showing all of them simultaneously reveals whether the signal is robust or ambiguous.
+
+| Method | Family | Core idea |
+|---|---|---|
+| **Copeland** ★ | Social Choice | Pairwise majority tournament: the stock "wins" on a factor if its score > 0.5 (market avg). Final score = (wins − losses) / n_factors, mapped to [0, 1] |
+| **Borda** | Social Choice | Discretises each factor into quintile bins (0–4), then takes the weighted sum |
+| **Majority Judgment** | Social Choice | Uses the weighted **median** instead of mean — robust to one extreme factor dominating |
+| **TOPSIS** | MCDM | Measures geometric distance from the ideal solution (all factors = 1) and the worst (all = 0) |
+| **VIKOR** | MCDM | Balances group utility (sum of all factor gaps) against individual regret (worst single factor gap) |
+| **Z-Score** | Heuristic | Industry-standard: standardise each factor, weighted average, sigmoid |
+| **Mean Rank** | Heuristic | Simple weighted average of the normalised scores |
+
+**Why Copeland is the recommended method (★):** Guidetti et al. (2026) demonstrate on US equity data 2000–2023 that Copeland dominates all 10 competing methods. Under heteroskedastic noise, its misordering probability decreases *exponentially* with the number of informative factors — a mathematical guarantee no heuristic method can match.
+
+**How to interpret the comparison:** If all methods agree → high-confidence signal. If they diverge significantly → the stock has an uneven profile (e.g. very strong on one factor category, very weak on another) and the composite score should be taken with more caution.
+
+---
+
+### Peer Comparison
+
+Compares the stock against up to 5 sector peers on standard sell-side multiples:
+
+| Metric | Cheaper is better? |
+|---|---|
+| P/E (trailing) | Yes — lower multiple = cheaper on earnings |
+| EV/EBITDA | Yes — lower multiple = cheaper on cash flow |
+| P/S | Yes — lower multiple = cheaper on revenue |
+| P/B | Yes — lower multiple = cheaper on book value |
+| ROE % | No — higher = more efficient use of equity |
+| Net Margin % | No — higher = more profitable |
+
+The rank `#X/N` shown in the report tells you where the stock sits among its peers on each metric (1 = best).
+
+---
+
+### LLM Cost (cloud providers)
+
+The LLM is used **once per analysis**, only for the sentiment/thesis step. The input is roughly 800–1 200 tokens (news headlines + transcript excerpt); the output is ~200 tokens (JSON with score, theses, themes).
+
+| Provider / Model | Cost per analysis | 100 analyses |
+|---|---|---|
+| Ollama / llama3.2 (local) | **$0.00** | $0.00 |
+| OpenAI / gpt-4o-mini | ~$0.0003 | ~$0.03 |
+| OpenAI / gpt-4o | ~$0.008 | ~$0.80 |
+| Anthropic / claude-3-haiku | ~$0.0003 | ~$0.03 |
+| Anthropic / claude-3-5-sonnet | ~$0.005 | ~$0.50 |
+
+The rest of the pipeline (factor computation, aggregation, peer fetch) runs entirely locally with no API calls.
+
+---
+
 ## Notebooks
 
 | Notebook | Description |
